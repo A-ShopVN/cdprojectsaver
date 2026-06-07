@@ -69,6 +69,9 @@
         .menu-dropdown { display: none; }
         .group:hover .menu-dropdown { display: block; }
         .sidebar-transition { transition: transform 0.3s ease-in-out; }
+
+        /* Style cho Code bị khóa */
+        .locked-editor .CodeMirror { opacity: 0.6; pointer-events: none; }
     </style>
 </head>
 <body class="flex h-screen flex-col">
@@ -112,7 +115,16 @@
         </div>
         
         <div class="flex items-center space-x-3">
-            <span id="auth-status" class="text-xs text-gray-400 hidden sm:inline bg-black/20 px-3 py-1.5 rounded-full"><i class="fas fa-spinner fa-spin mr-1"></i> Đang kết nối...</span>
+            <div class="flex items-center bg-black/20 px-3 py-1.5 rounded-full hidden sm:flex" id="user-info-container">
+                <span id="auth-status" class="text-xs text-gray-400"><i class="fas fa-spinner fa-spin mr-1"></i> Đang kết nối...</span>
+                <button id="btn-logout" class="ml-3 text-gray-400 hover:text-red-400 hidden transition-colors" title="Đăng xuất"><i class="fas fa-sign-out-alt"></i></button>
+            </div>
+            
+            <!-- Nút Khóa Code -->
+            <button id="btn-lock" class="hidden bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-xl text-xs transition-all shadow-lg flex items-center mr-2">
+                <i class="fas fa-unlock text-green-400 mr-1.5"></i> Không Khóa
+            </button>
+
             <button id="btn-save" class="bg-[#007acc] hover:bg-blue-500 text-white px-4 py-1.5 rounded-xl text-xs transition-all shadow-lg shadow-blue-500/20 flex items-center opacity-50 cursor-not-allowed" disabled>
                 <i class="fas fa-save mr-1.5"></i> Save
             </button>
@@ -148,10 +160,20 @@
                     <div class="file-tab px-4 py-2 flex items-center space-x-2 whitespace-nowrap" data-tab="css"><i class="fab fa-css3-alt text-blue-500"></i><span>style.css</span></div>
                     <div class="file-tab px-4 py-2 flex items-center space-x-2 whitespace-nowrap" data-tab="js"><i class="fab fa-js text-yellow-400"></i><span>script.js</span></div>
                 </div>
-                <div class="flex-1 relative">
+                
+                <div class="flex-1 relative" id="editors-wrapper">
                     <div id="editor-html-container" class="editor-container active absolute inset-0"></div>
                     <div id="editor-css-container" class="editor-container absolute inset-0"></div>
                     <div id="editor-js-container" class="editor-container absolute inset-0"></div>
+                    
+                    <!-- Lớp phủ mờ che code khi khóa -->
+                    <div id="lock-overlay" class="absolute inset-0 z-20 bg-black/40 backdrop-blur-[2px] hidden flex-col items-center justify-center cursor-pointer transition-opacity hover:bg-black/50">
+                        <div class="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-3 shadow-lg shadow-red-500/20">
+                            <i class="fas fa-lock text-3xl text-red-500"></i>
+                        </div>
+                        <h3 class="text-white font-bold text-lg drop-shadow-md">Dự án chỉ đọc (Đã khóa)</h3>
+                        <p class="text-gray-300 text-sm bg-black/60 px-5 py-2 rounded-full mt-3 shadow-inner">Click để nhập mã PIN sửa Code</p>
+                    </div>
                 </div>
             </div>
 
@@ -173,11 +195,15 @@
         <span id="toast-msg" class="font-medium">Thông báo</span>
     </div>
 
-    <!-- Custom Dialog Modal (iOS Style) -->
-    <div id="custom-dialog" class="fixed inset-0 bg-black/60 z-[200] hidden items-center justify-center backdrop-blur-sm transition-opacity duration-200 opacity-0">
+    <!-- Custom Dialog Modal -->
+    <div id="custom-dialog" class="fixed inset-0 bg-black/60 z-[200] hidden flex items-center justify-center backdrop-blur-sm transition-opacity duration-200 opacity-0">
         <div id="dialog-content" class="bg-[#252526]/90 backdrop-blur-xl border border-white/10 rounded-[28px] shadow-2xl w-80 p-6 transform scale-95 transition-transform duration-200">
             <h3 id="dialog-title" class="text-xl font-semibold text-white mb-2 text-center">Xác nhận</h3>
             <p id="dialog-message" class="text-sm text-gray-300 mb-6 text-center leading-relaxed">Bạn có chắc chắn muốn thực hiện hành động này?</p>
+            
+            <!-- Input nhập PIN -->
+            <input type="password" id="dialog-input" maxlength="4" inputmode="numeric" placeholder="Nhập PIN 4 số..." class="hidden w-full bg-black/40 text-center tracking-widest text-xl text-white px-4 py-3 rounded-xl border border-white/10 mb-6 focus:border-[#007acc] outline-none transition-colors">
+            
             <div class="flex space-x-3">
                 <button id="dialog-btn-cancel" class="flex-1 py-3 rounded-xl text-sm font-semibold text-gray-300 bg-white/5 hover:bg-white/10 transition-colors">Hủy</button>
                 <button id="dialog-btn-confirm" class="flex-1 py-3 rounded-xl text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-all shadow-lg shadow-red-500/20">Đồng ý</button>
@@ -241,8 +267,13 @@
         let currentUsername = null;
         let unsubscribeProjects = null;
 
-        let currentProjectId = null;
+        // Biến Quản lý Khóa và Auto-save
+        let currentProject = null; 
+        let unlockedInSession = {}; 
+        let isOpeningProject = false;
+
         let previewTimeout = null;
+        let saveTimeout = null;
         let activeTabLang = 'html';
         let showPreview = true;
 
@@ -270,18 +301,20 @@
             setTimeout(() => toast.classList.add('opacity-0', 'translate-y-4'), 3000);
         }
 
-        // Custom iOS-style Dialog (thay thế alert/confirm)
+        // Custom Confirm Dialog
         function showConfirmDialog(title, message, isAlert = false) {
             return new Promise((resolve) => {
                 const dialog = document.getElementById('custom-dialog');
                 const dialogContent = document.getElementById('dialog-content');
                 const titleEl = document.getElementById('dialog-title');
                 const msgEl = document.getElementById('dialog-message');
+                const inputEl = document.getElementById('dialog-input');
                 const btnCancel = document.getElementById('dialog-btn-cancel');
                 const btnConfirm = document.getElementById('dialog-btn-confirm');
 
                 titleEl.textContent = title;
                 msgEl.textContent = message;
+                inputEl.classList.add('hidden');
 
                 if (isAlert) {
                     btnCancel.classList.add('hidden');
@@ -319,6 +352,174 @@
                 btnCancel.addEventListener('click', onCancel);
             });
         }
+
+        // Custom Input Dialog (Dùng cho nhập PIN)
+        function showInputDialog(title, message, isPassword = false) {
+            return new Promise((resolve) => {
+                const dialog = document.getElementById('custom-dialog');
+                const dialogContent = document.getElementById('dialog-content');
+                const titleEl = document.getElementById('dialog-title');
+                const msgEl = document.getElementById('dialog-message');
+                const inputEl = document.getElementById('dialog-input');
+                const btnCancel = document.getElementById('dialog-btn-cancel');
+                const btnConfirm = document.getElementById('dialog-btn-confirm');
+
+                titleEl.textContent = title;
+                msgEl.textContent = message;
+
+                inputEl.classList.remove('hidden');
+                inputEl.value = '';
+                inputEl.type = isPassword ? 'password' : 'text';
+
+                btnCancel.classList.remove('hidden');
+                btnConfirm.textContent = "Xác nhận";
+                btnConfirm.className = "flex-1 py-3 rounded-xl text-sm font-semibold bg-[#007acc] hover:bg-blue-500 text-white transition-all shadow-lg shadow-blue-500/20";
+
+                dialog.classList.remove('hidden');
+                setTimeout(() => {
+                    dialog.classList.remove('opacity-0');
+                    dialogContent.classList.remove('scale-95');
+                    dialogContent.classList.add('scale-100');
+                    inputEl.focus();
+                }, 10);
+
+                const closeDialog = (result) => {
+                    dialog.classList.add('opacity-0');
+                    dialogContent.classList.remove('scale-100');
+                    dialogContent.classList.add('scale-95');
+                    setTimeout(() => {
+                        dialog.classList.add('hidden');
+                        inputEl.classList.add('hidden');
+                        resolve(result);
+                    }, 200);
+                    btnConfirm.removeEventListener('click', onConfirm);
+                    btnCancel.removeEventListener('click', onCancel);
+                };
+
+                const onConfirm = () => closeDialog(inputEl.value);
+                const onCancel = () => closeDialog(null);
+
+                btnConfirm.addEventListener('click', onConfirm);
+                btnCancel.addEventListener('click', onCancel);
+            });
+        }
+
+        // ==========================================
+        // KHÓA CODE LOGIC
+        // ==========================================
+        function setEditorLockState(isLocked) {
+            const lockOverlay = document.getElementById('lock-overlay');
+            const btnLock = document.getElementById('btn-lock');
+            const btnSave = document.getElementById('btn-save');
+            const wrapper = document.getElementById('editors-wrapper');
+            const nameInput = document.getElementById('project-name-input');
+
+            if (isLocked) {
+                // Khóa Code
+                editorHtml.setOption("readOnly", "nocursor");
+                editorCss.setOption("readOnly", "nocursor");
+                editorJs.setOption("readOnly", "nocursor");
+                nameInput.readOnly = true;
+                
+                lockOverlay.classList.remove('hidden');
+                lockOverlay.classList.add('flex');
+                wrapper.classList.add('locked-editor');
+                
+                btnSave.classList.add('opacity-50', 'cursor-not-allowed');
+                btnSave.disabled = true;
+
+                btnLock.innerHTML = '<i class="fas fa-lock text-red-400 mr-1.5"></i> Bị Khóa';
+                btnLock.className = "bg-red-500/20 hover:bg-red-500/30 text-red-400 px-3 py-1.5 rounded-xl text-xs transition-all shadow-lg flex items-center mr-2";
+            } else {
+                // Mở Code
+                editorHtml.setOption("readOnly", false);
+                editorCss.setOption("readOnly", false);
+                editorJs.setOption("readOnly", false);
+                nameInput.readOnly = false;
+                
+                lockOverlay.classList.add('hidden');
+                lockOverlay.classList.remove('flex');
+                wrapper.classList.remove('locked-editor');
+
+                btnSave.classList.remove('opacity-50', 'cursor-not-allowed');
+                btnSave.disabled = false;
+
+                if (currentProject && currentProject.isLocked) {
+                    btnLock.innerHTML = '<i class="fas fa-unlock text-green-400 mr-1.5"></i> Đã Mở Tạm';
+                    btnLock.className = "bg-green-500/20 hover:bg-green-500/30 text-green-400 px-3 py-1.5 rounded-xl text-xs transition-all shadow-lg flex items-center mr-2";
+                } else {
+                    btnLock.innerHTML = '<i class="fas fa-unlock text-gray-400 mr-1.5"></i> Không Khóa';
+                    btnLock.className = "bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-xl text-xs transition-all shadow-lg flex items-center mr-2";
+                }
+            }
+        }
+
+        async function handleLockToggle() {
+            if (!currentProject) return;
+            const isCurrentlyLocked = currentProject.isLocked && !unlockedInSession[currentProject.id];
+
+            if (isCurrentlyLocked) {
+                // Đang bị khóa -> Hỏi PIN để mở
+                const pin = await showInputDialog("Mở Khóa Dự Án", `Nhập mã PIN 4 số để chỉnh sửa "${currentProject.name}"`, true);
+                if (pin === null) return;
+                if (pin === currentProject.pin) {
+                    unlockedInSession[currentProject.id] = true;
+                    sessionStorage.setItem(`unlocked_${currentProject.id}`, 'true'); // Giữ session khi F5
+                    setEditorLockState(false);
+                    showToast("Đã mở khóa! Bạn có thể sửa code.", "success");
+                } else {
+                    await showConfirmDialog("Sai Mã PIN", "Mã PIN không chính xác.", true);
+                }
+            } else if (currentProject.isLocked && unlockedInSession[currentProject.id]) {
+                // Đang mở tạm -> Quản lý Khóa
+                const choice = await showConfirmDialog("Quản Lý Khóa", "Dự án đang được bảo vệ. Bạn muốn khóa lại ngay không?");
+                if (choice) {
+                    unlockedInSession[currentProject.id] = false;
+                    sessionStorage.removeItem(`unlocked_${currentProject.id}`);
+                    setEditorLockState(true);
+                    showToast("Đã khóa dự án lại.", "success");
+                } else {
+                    const remove = await showConfirmDialog("Gỡ Khóa vĩnh viễn", "Bạn có muốn gỡ bỏ mã PIN bảo vệ dự án này không?");
+                    if (remove) {
+                        const pin = await showInputDialog("Xác nhận gỡ khóa", "Nhập lại mã PIN để vô hiệu hóa bảo vệ.", true);
+                        if (pin === currentProject.pin) {
+                            currentProject.isLocked = false;
+                            currentProject.pin = '';
+                            sessionStorage.removeItem(`unlocked_${currentProject.id}`);
+                            await saveProject(); // Sẽ lưu thành công vì isLocked = false
+                            setEditorLockState(false);
+                            showToast("Đã gỡ khóa vĩnh viễn!", "success");
+                        } else if (pin !== null) {
+                            await showConfirmDialog("Sai Mã PIN", "Mã PIN không chính xác.", true);
+                        }
+                    }
+                }
+            } else {
+                // Chưa khóa -> Đặt PIN để khóa
+                const pin = await showInputDialog("Khóa Dự Án", "Tạo mã PIN 4 số. Người khác xem được code nhưng không thể chỉnh sửa hay xóa nếu không có PIN.", true);
+                if (pin === null) return;
+                if (pin.length === 4 && !isNaN(pin)) {
+                    currentProject.isLocked = true;
+                    currentProject.pin = pin;
+                    
+                    // FIX: Tạm mở quyền lưu (vì đang ở bước thiết lập, cần được quyền save PIN lên server)
+                    unlockedInSession[currentProject.id] = true;
+                    await saveProject();
+                    
+                    // Xong xuôi thì khóa lại thật sự để bảo vệ
+                    unlockedInSession[currentProject.id] = false;
+                    sessionStorage.removeItem(`unlocked_${currentProject.id}`);
+                    setEditorLockState(true);
+                    
+                    showToast("Đã khóa dự án an toàn!", "success");
+                } else {
+                    await showConfirmDialog("Lỗi PIN", "Mã PIN phải bao gồm đúng 4 chữ số.", true);
+                }
+            }
+        }
+
+        document.getElementById('btn-lock').addEventListener('click', handleLockToggle);
+        document.getElementById('lock-overlay').addEventListener('click', handleLockToggle);
 
         function toggleSidebar() {
             const sidebar = document.getElementById('sidebar');
@@ -365,25 +566,39 @@
                 snapshot.forEach(doc => { projects.push({ id: doc.id, ...doc.data() }); });
                 projects.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
+                let isInitialLoad = !currentProject; // Kiểm tra lần đầu nạp danh sách
+
                 if (projects.length === 0) {
                     projectsList.innerHTML = `<div class="px-4 py-3 text-xs text-gray-500 italic">Chưa có dự án nào.</div>`;
+                    if (isInitialLoad) createNewProject();
                     return;
                 }
 
                 projectsList.innerHTML = '';
                 projects.forEach(proj => {
                     const div = document.createElement('div');
-                    div.className = `project-item px-3 py-2 flex items-center justify-between mx-2 my-1 rounded-xl ${proj.id === currentProjectId ? 'active' : ''}`;
+                    div.className = `project-item px-3 py-2 flex items-center justify-between mx-2 my-1 rounded-xl ${currentProject && proj.id === currentProject.id ? 'active' : ''}`;
+                    div.setAttribute('data-id', proj.id);
                     
                     const nameSpan = document.createElement('span');
                     nameSpan.className = 'truncate max-w-[140px] font-medium';
-                    nameSpan.innerHTML = `<i class="fas fa-file-code text-[#007acc] mr-2 text-xs"></i>${proj.name || 'Dự án không tên'}`;
+                    
+                    const iconStyle = proj.isLocked ? '<i class="fas fa-lock text-red-400 mr-2 text-xs"></i>' : '<i class="fas fa-file-code text-[#007acc] mr-2 text-xs"></i>';
+                    nameSpan.innerHTML = `${iconStyle}${proj.name || 'Dự án không tên'}`;
                     
                     const deleteBtn = document.createElement('button');
                     deleteBtn.className = 'text-gray-400 hover:text-red-400 opacity-0 group-hover:opacity-100 transition p-1.5 hover:bg-black/20 rounded-lg';
                     deleteBtn.innerHTML = '<i class="fas fa-trash-alt text-xs"></i>';
                     deleteBtn.onclick = async (e) => {
                         e.stopPropagation();
+                        if (proj.isLocked && !unlockedInSession[proj.id]) {
+                            const pin = await showInputDialog("Xóa Dự Án Đã Khóa", "Dự án đang được bảo vệ. Nhập mã PIN để xác nhận xóa vĩnh viễn.", true);
+                            if (pin === null) return;
+                            if (pin !== proj.pin) {
+                                await showConfirmDialog("Sai Mã PIN", "Mã PIN không chính xác. Không thể xóa.", true);
+                                return;
+                            }
+                        }
                         const ok = await showConfirmDialog("Xóa dự án", `Bạn có chắc muốn xóa "${proj.name}" không? Thao tác này không thể hoàn tác.`);
                         if(ok) deleteProject(proj.id);
                     };
@@ -393,65 +608,119 @@
                     div.onclick = () => openProject(proj);
                     projectsList.appendChild(div);
                 });
+
+                // Auto Open - Reload Session Restore
+                if (isInitialLoad) {
+                    let lastProjId = localStorage.getItem('editor_last_project');
+                    let projToOpen = projects.find(p => p.id === lastProjId);
+                    if (projToOpen) {
+                        openProject(projToOpen);
+                    } else if (projects.length > 0) {
+                        openProject(projects[0]);
+                    }
+                } else if (currentProject) {
+                    // Nếu đang mở mà file bị xóa từ chỗ khác
+                    if (!projects.find(p => p.id === currentProject.id)) {
+                        if (projects.length > 0) openProject(projects[0]);
+                        else createNewProject();
+                    }
+                }
+
             }, (error) => console.error("Lỗi lấy dữ liệu:", error));
         }
 
         function openProject(proj) {
-            if(currentProjectId === proj.id) return;
-            currentProjectId = proj.id;
-            document.getElementById('project-name-input').value = proj.name || 'Dự án không tên';
+            if(currentProject && currentProject.id === proj.id) return;
             
+            isOpeningProject = true; // Chặn auto-save khi đang tự động điền code
+            currentProject = proj; 
+
+            // Cập nhật Local Storage & Session Storage
+            localStorage.setItem('editor_last_project', proj.id);
+            if (sessionStorage.getItem(`unlocked_${proj.id}`) === 'true') {
+                unlockedInSession[proj.id] = true;
+            }
+
+            document.getElementById('project-name-input').value = proj.name || 'Dự án không tên';
             editorHtml.setValue(proj.html || '');
             editorCss.setValue(proj.css || '');
             editorJs.setValue(proj.js || '');
             
-            document.querySelectorAll('.project-item').forEach(item => {
-                item.classList.remove('active'); 
-            });
-            showToast(`Đã mở dự án: ${proj.name}`, 'success');
+            document.querySelectorAll('.project-item').forEach(item => item.classList.remove('active'));
+            const activeItem = document.querySelector(`.project-item[data-id="${proj.id}"]`);
+            if(activeItem) activeItem.classList.add('active');
+            
+            document.getElementById('btn-lock').classList.remove('hidden');
+            const isCurrentlyLocked = proj.isLocked && !unlockedInSession[proj.id];
+            setEditorLockState(isCurrentlyLocked);
+
+            showToast(`Đã tải dự án: ${proj.name}`, 'success');
             
             if(window.innerWidth < 768) {
                 document.getElementById('sidebar').classList.add('-translate-x-full');
                 document.getElementById('sidebar-overlay').classList.add('hidden');
             }
             updatePreview();
+
+            // Nhả khóa block sau khi điền xong
+            setTimeout(() => { isOpeningProject = false; }, 100);
         }
 
         function createNewProject() {
-            currentProjectId = `proj_${Date.now()}`;
-            document.getElementById('project-name-input').value = 'Project Mới';
+            isOpeningProject = true;
+            currentProject = {
+                id: `proj_${Date.now()}`,
+                name: 'Project Mới',
+                isLocked: false,
+                pin: ''
+            };
+            localStorage.setItem('editor_last_project', currentProject.id);
+
+            document.getElementById('project-name-input').value = currentProject.name;
             editorHtml.setValue(defaultHtml);
             editorCss.setValue(defaultCss);
             editorJs.setValue(defaultJs);
+            
             document.querySelectorAll('.project-item').forEach(item => item.classList.remove('active'));
+            document.getElementById('btn-lock').classList.remove('hidden');
+            setEditorLockState(false);
+            
             showToast("Đã tạo không gian code mới");
             updatePreview();
+            setTimeout(() => { isOpeningProject = false; }, 100);
         }
 
-        async function saveProject() {
-            if (!currentUsername) return;
+        async function saveProject(silent = false) {
+            if (!currentUsername || !currentProject) return;
+            if (currentProject.isLocked && !unlockedInSession[currentProject.id]) {
+                if (!silent) showToast("Dự án đang khóa, không thể lưu!", "error");
+                return;
+            }
+
             const btnSave = document.getElementById('btn-save');
-            btnSave.innerHTML = `<i class="fas fa-spinner fa-spin mr-1.5"></i> Saving...`;
+            if (!silent) btnSave.innerHTML = `<i class="fas fa-spinner fa-spin mr-1.5"></i> Saving...`;
             
             try {
-                if (!currentProjectId) currentProjectId = `proj_${Date.now()}`;
                 const projectName = document.getElementById('project-name-input').value || 'Dự án không tên';
-                const docRef = doc(db, 'artifacts', appId, 'users', currentUsername, 'projects', currentProjectId);
+                const docRef = doc(db, 'artifacts', appId, 'users', currentUsername, 'projects', currentProject.id);
                 
                 await setDoc(docRef, {
                     name: projectName,
                     html: editorHtml.getValue(),
                     css: editorCss.getValue(),
                     js: editorJs.getValue(),
+                    isLocked: currentProject.isLocked || false,
+                    pin: currentProject.pin || '',
                     updatedAt: Date.now()
                 }, { merge: true });
 
-                showToast(`Đã lưu "${projectName}"`, "success");
+                currentProject.name = projectName;
+                if (!silent) showToast(`Đã lưu "${projectName}"`, "success");
             } catch (error) {
                 console.error("Lỗi khi lưu:", error);
-                showToast("Lỗi lưu dự án", "error");
+                if (!silent) showToast("Lỗi lưu dự án", "error");
             } finally {
-                btnSave.innerHTML = `<i class="fas fa-save mr-1.5"></i> Save`;
+                if (!silent) btnSave.innerHTML = `<i class="fas fa-save mr-1.5"></i> Save`;
             }
         }
 
@@ -460,12 +729,15 @@
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUsername, 'projects', id));
                 showToast("Đã xóa dự án", "success");
-                if (currentProjectId === id) createNewProject();
+                if (currentProject && currentProject.id === id) createNewProject();
             } catch (error) {
                 console.error("Lỗi xóa dự án:", error);
             }
         }
 
+        // ==========================================
+        // KHU VỰC AUTH & LOGIN
+        // ==========================================
         let isLoginMode = true;
         const authModal = document.getElementById('auth-modal');
         const tabLogin = document.getElementById('tab-login');
@@ -474,6 +746,38 @@
         const uidInput = document.getElementById('auth-uid');
         const authError = document.getElementById('auth-error');
         const btnAuthSubmit = document.getElementById('btn-auth-submit');
+
+        // Logic Auto Login khi F5 Reload (Tự động đọc localStorage)
+        const savedUser = localStorage.getItem('editor_username');
+        const savedUid = localStorage.getItem('editor_uid');
+
+        async function attemptAutoLogin() {
+            if (savedUser && savedUid) {
+                try {
+                    const accountRef = doc(db, 'artifacts', appId, 'public_accounts', savedUser);
+                    const accountSnap = await getDoc(accountRef);
+                    if(accountSnap.exists() && accountSnap.data().uid10 === savedUid) {
+                        currentUsername = savedUser;
+                        authModal.classList.add('hidden');
+                        document.getElementById('auth-status').innerHTML = `<i class="fas fa-user-circle text-green-500 mr-1"></i> ${savedUser}`;
+                        document.getElementById('btn-logout').classList.remove('hidden');
+                        loadProjects();
+                        return true;
+                    }
+                } catch(e) { console.error("Auto login fail", e); }
+            }
+            return false;
+        }
+
+        document.getElementById('btn-logout').addEventListener('click', async () => {
+            const ok = await showConfirmDialog("Đăng xuất", "Bạn có chắc chắn muốn đăng xuất khỏi tài khoản hiện tại?");
+            if (ok) {
+                localStorage.removeItem('editor_username');
+                localStorage.removeItem('editor_uid');
+                localStorage.removeItem('editor_last_project');
+                location.reload();
+            }
+        });
 
         function switchAuthMode(login) {
             isLoginMode = login;
@@ -524,7 +828,6 @@
             btnAuthSubmit.disabled = true;
 
             try {
-                // Đảm bảo phải có UID ẩn danh từ Firebase trước khi thao tác Database
                 if (!currentUser) await signInAnonymously(auth);
 
                 const accountRef = doc(db, 'artifacts', appId, 'public_accounts', username);
@@ -533,12 +836,14 @@
                 if(isLoginMode) {
                     if(accountSnap.exists() && accountSnap.data().uid10 === uidVal) {
                         currentUsername = username;
+                        localStorage.setItem('editor_username', username);
+                        localStorage.setItem('editor_uid', uidVal);
+                        
                         authModal.classList.add('hidden');
                         document.getElementById('auth-status').innerHTML = `<i class="fas fa-user-circle text-green-500 mr-1"></i> ${username}`;
-                        loadProjects(); createNewProject();
+                        document.getElementById('btn-logout').classList.remove('hidden');
+                        loadProjects();
                         showToast(`Chào mừng ${username}!`, 'success');
-                        document.getElementById('btn-save').disabled = false;
-                        document.getElementById('btn-save').classList.remove('opacity-50', 'cursor-not-allowed');
                     } else {
                         authError.textContent = "Username hoặc UID không chính xác!";
                         authError.classList.remove('hidden');
@@ -550,12 +855,14 @@
                     } else {
                         await setDoc(accountRef, { uid10: uidVal, createdAt: Date.now() });
                         currentUsername = username;
+                        localStorage.setItem('editor_username', username);
+                        localStorage.setItem('editor_uid', uidVal);
+
                         authModal.classList.add('hidden');
                         document.getElementById('auth-status').innerHTML = `<i class="fas fa-user-circle text-green-500 mr-1"></i> ${username}`;
-                        loadProjects(); createNewProject();
+                        document.getElementById('btn-logout').classList.remove('hidden');
+                        loadProjects();
                         showToast(`Tạo tài khoản thành công!`, 'success');
-                        document.getElementById('btn-save').disabled = false;
-                        document.getElementById('btn-save').classList.remove('opacity-50', 'cursor-not-allowed');
                     }
                 }
             } catch (err) {
@@ -568,11 +875,13 @@
             }
         });
 
-        // Initialize Anonymous Auth to get a basic session
-        onAuthStateChanged(auth, (user) => {
+        onAuthStateChanged(auth, async (user) => {
             if (user) {
                 currentUser = user;
-                if(!currentUsername) authModal.classList.remove('hidden');
+                if(!currentUsername) {
+                    const loggedIn = await attemptAutoLogin();
+                    if (!loggedIn) authModal.classList.remove('hidden');
+                }
             }
         });
         signInAnonymously(auth).catch(e => console.error("Anonymous auth failed", e));
@@ -597,11 +906,14 @@
         document.getElementById('sidebar-overlay').addEventListener('click', toggleSidebar);
 
         document.getElementById('menu-file-new').addEventListener('click', createNewProject);
-        document.getElementById('menu-file-save').addEventListener('click', saveProject);
+        document.getElementById('menu-file-save').addEventListener('click', () => saveProject(false));
         document.getElementById('btn-new-project-side').addEventListener('click', createNewProject);
-        document.getElementById('btn-save').addEventListener('click', saveProject);
+        document.getElementById('btn-save').addEventListener('click', () => saveProject(false));
         
         document.getElementById('menu-edit-clear').addEventListener('click', async () => {
+            if(currentProject && currentProject.isLocked && !unlockedInSession[currentProject.id]) {
+                return showToast("Dự án đang khóa, không thể xóa code!", "error");
+            }
             const ok = await showConfirmDialog("Xóa mã nguồn", "Bạn có chắc muốn xóa sạch toàn bộ nội dung của file này không?", false);
             if(ok) {
                 if (activeTabLang === 'html') editorHtml.setValue('');
@@ -619,7 +931,6 @@
             setTimeout(() => { editorHtml.refresh(); editorCss.refresh(); editorJs.refresh(); }, 50);
         });
 
-        // Full Screen Feature
         document.getElementById('menu-view-fullscreen').addEventListener('click', async () => {
             const win = window.open('', '_blank');
             if(win) {
@@ -634,21 +945,33 @@
         document.getElementById('btn-refresh').addEventListener('click', updatePreview);
 
         const onEditorChange = () => {
+            if (isOpeningProject) return; // Không Auto-save hay reload iframe khi đang điền code của file
+
+            // Auto reload preview
             clearTimeout(previewTimeout);
             previewTimeout = setTimeout(updatePreview, 800);
+
+            // Auto Save ngầm (sau 2 giây ngừng gõ)
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                if(currentProject && currentUsername && (!currentProject.isLocked || unlockedInSession[currentProject.id])) {
+                    saveProject(true); // Gửi save nhưng không hiện thông báo
+                }
+            }, 2000);
         };
+
         editorHtml.on('change', onEditorChange);
         editorCss.on('change', onEditorChange);
         editorJs.on('change', onEditorChange);
 
         document.getElementById('project-name-input').addEventListener('change', () => {
-            if(currentProjectId && currentUsername) saveProject();
+            if(currentProject && currentUsername && (!currentProject.isLocked || unlockedInSession[currentProject.id])) saveProject(false);
         });
         
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
                 e.preventDefault();
-                saveProject();
+                saveProject(false);
             }
         });
 
